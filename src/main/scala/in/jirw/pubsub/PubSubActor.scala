@@ -1,6 +1,6 @@
 package in.jirw.pubsub
 
-import akka.actor.{Actor, ActorLogging, ActorRef}
+import akka.actor.{Actor, ActorLogging, ActorRef, Terminated}
 import in.jirw.pubsub.SubActor.Published
 
 /**
@@ -8,8 +8,12 @@ import in.jirw.pubsub.SubActor.Published
  */
 
 object PubSubActor {
-  case class Subscribe(topic: String, f: String => Unit)
+  case class Subscribe(topic: String, a: ActorRef)
+  case class Subscribed(sub: Subscribe)
+  case class Unsubscribe(topic: String, a: ActorRef)
+  case class Unsubscribed(unsub: Unsubscribe)
   case class Publish(topic: String, msg: String)
+  case class PublishAll(msg: String)
 }
 
 class PubSubActor extends Actor with ActorLogging {
@@ -18,13 +22,29 @@ class PubSubActor extends Actor with ActorLogging {
   private var subscribers = Map.empty[String, Set[ActorRef]].withDefaultValue(Set.empty)
 
   def receive = {
-    case Subscribe(topic, f) => {
+    case Terminated(corpse) => {
+      for ((k, v) <- subscribers) {
+        subscribers += (k -> (v - corpse))
+      }
+    }
+    case subscribe @ Subscribe(topic, a) => {
       log.info("Got subscribe message: " + topic)
-      val child: ActorRef = context.actorOf(SubActor.props(f), name = "subscriber" + topic + subscribers(topic).size)
-      subscribers = subscribers + (topic -> (subscribers(topic) + child))
+      subscribers += (topic -> (subscribers(topic) + a))
+      context.watch(a)
+      sender() ! Subscribed(subscribe)
+    }
+    case unsubscribe @ Unsubscribe(topic, a) => {
+      log.info("Got unsubscribe message: " + topic)
+      subscribers += (topic -> (subscribers(topic) - a))
+      sender() ! Unsubscribed(unsubscribe)
     }
     case Publish(topic, msg) => {
       for (sub <- subscribers(topic)) sub ! Published(msg)
+    }
+    case PublishAll(msg) => {
+      for ((k, v) <- subscribers) {
+        for (sub <- v) sub ! Published(msg)
+      }
     }
     case default => log.info("Unknown Message")
   }
